@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -389,6 +389,7 @@ public partial class MainWindow : WpfUiWindow, INavigationWindow
         ["LibraryPage"] = ("Library", "Browsing the game library"),
         ["PrivateServersPage"] = ("Private Servers", "Managing private servers"),
         ["NewsPage"] = ("News", "Reading what's new"),
+        ["VoidstrapModsPage"] = ("Voidstrap Mods", "Browsing and managing Voidstrap mods"),
         ["FriendsPage"] = ("Friends", "Chatting with friends"),
         ["AccountsPage"] = ("Account Manager", "Managing Roblox accounts"),
         ["AvatarPage"] = ("Avatar Customization", "Customizing an avatar"),
@@ -2912,9 +2913,11 @@ public partial class MainWindow : WpfUiWindow, INavigationWindow
     private void TopNavNews_Click(object sender, RoutedEventArgs e)
     {
         PagesMenuPopup.IsOpen = false;
-        _newsPage ??= new NewsPage();
-        if (!ReferenceEquals(RootFrame.Content, _newsPage))
-            RootNavigation.NavigateExternal(_newsPage);
+        if (_newsPage != null && ReferenceEquals(RootFrame.Content, _newsPage))
+            return;
+        _newsPage?.Release();
+        _newsPage = new NewsPage();
+        RootNavigation.NavigateExternal(_newsPage);
     }
 
     private VoidstrapModsPage? _voidstrapModsPage;
@@ -8296,7 +8299,7 @@ public partial class MainWindow : WpfUiWindow, INavigationWindow
     }
 
     private Border[] ModalPanels =>
-        [LaunchTargetPanel, CommandPalettePanel, NotificationsPanel, ReleaseNotesPanel, RiShadeReleasePanel, GameDetailPanel, BootstrapperImportPanel, LearnMorePanel];
+        [LaunchTargetPanel, CommandPalettePanel, NotificationsPanel, ReleaseNotesPanel, RiShadeReleasePanel, GameDetailPanel, BootstrapperImportPanel, LearnMorePanel, NewsPostPanel];
 
     private bool ModalIsSidebar => ReferenceEquals(_modalPanel, LaunchTargetPanel);
 
@@ -8637,6 +8640,8 @@ public partial class MainWindow : WpfUiWindow, INavigationWindow
             ReleaseBootstrapperImport();
         if (ReferenceEquals(_modalPanel, LearnMorePanel))
             ReleaseLearnMore();
+        if (ReferenceEquals(_modalPanel, NewsPostPanel))
+            ReleaseNewsPost();
         if (_modalScale != null)
             SetModalScale(_modalScale, 1.0);
         LaunchTargetPanelSlide.BeginAnimation(TranslateTransform.XProperty, null);
@@ -8770,6 +8775,28 @@ public partial class MainWindow : WpfUiWindow, INavigationWindow
             return;
         view.CloseRequested -= LearnMore_CloseRequested;
         LearnMoreHost.Content = null;
+    }
+
+    internal void ShowNewsPost(Voidstrap.Models.NewsPost post)
+    {
+        ReleaseNewsPost();
+        Voidstrap.UI.Elements.Dialogs.NewsPostDialog view = new(post);
+        view.CloseRequested += NewsPost_CloseRequested;
+        NewsPostHost.Content = view;
+        OpenSimpleModal(NewsPostPanel, NewsPostPanelScale);
+    }
+
+    private void NewsPost_CloseRequested(object? sender, EventArgs e)
+    {
+        CloseSimpleModal();
+    }
+
+    private void ReleaseNewsPost()
+    {
+        if (NewsPostHost.Content is not Voidstrap.UI.Elements.Dialogs.NewsPostDialog view)
+            return;
+        view.CloseRequested -= NewsPost_CloseRequested;
+        NewsPostHost.Content = null;
     }
 
     public void ShowGameDetail(long placeId, long universeId, string name)

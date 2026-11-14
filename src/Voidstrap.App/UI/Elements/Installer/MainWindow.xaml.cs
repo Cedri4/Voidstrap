@@ -41,6 +41,18 @@ public partial class MainWindow : WpfUiWindow, INavigationWindow
     public Action? CancelCallback;
     private bool _navigating;
 
+    private const double SlideDistance = 48;
+
+    private readonly TranslateTransform _frameSlide = new();
+
+    private readonly TranslateTransform _headingSlide = new();
+
+    private int _pendingSlide;
+
+    private readonly DoubleAnimation _importFadeOut = new(0, TimeSpan.FromMilliseconds(120));
+
+    private Action<string>? _importChosen;
+
     public NextAction CloseAction;
 
     public bool Finished => _currentPage == _pages.Last();
@@ -69,17 +81,14 @@ public partial class MainWindow : WpfUiWindow, INavigationWindow
         _viewModel.PageRequest += OnPageRequest;
         base.DataContext = _viewModel;
         InitializeComponent();
+        RootFrame.RenderTransform = _frameSlide;
+        StepHeadingText.RenderTransform = _headingSlide;
+        _importFadeOut.Completed += ImportFadeOut_Completed;
         App.Logger.WriteLine("MainWindow", "Initializing installer window");
         base.Closing += MainWindow_Closing;
         if (Voidstrap.Utility.Platform.UsesPortableUi)
         {
             RootFrame.SizeChanged += RootFrame_SizeChanged;
-        }
-        if (Voidstrap.Utility.Platform.IsLinux)
-        {
-            Voidstrap.UI.LinuxUiPerformance.ReducedMotionChanged += OnLinuxReducedMotionChanged;
-            if (Voidstrap.UI.LinuxUiPerformance.ReducedMotion)
-                RootNavigation.TransitionDuration = 0;
         }
         base.Closed += MainWindow_Closed;
         _viewModel.SetStep(0, HeadingFor(typeof(InstallPage)));
@@ -92,11 +101,6 @@ public partial class MainWindow : WpfUiWindow, INavigationWindow
     {
         Loaded -= MainWindow_Loaded;
         ApplyChrome(_currentPage);
-    }
-
-    private void OnLinuxReducedMotionChanged(object? sender, EventArgs e)
-    {
-        RootNavigation.TransitionDuration = 0;
     }
 
     private void OnCloseWindowRequest(object? sender, EventArgs e)
@@ -132,7 +136,10 @@ public partial class MainWindow : WpfUiWindow, INavigationWindow
 
     private void MainWindow_Closed(object? sender, EventArgs e)
     {
-        Voidstrap.UI.LinuxUiPerformance.ReducedMotionChanged -= OnLinuxReducedMotionChanged;
+        _pendingSlide = 0;
+        StopSlide();
+        _importFadeOut.Completed -= ImportFadeOut_Completed;
+        ReleaseImport();
         base.Closing -= MainWindow_Closing;
         base.Closed -= MainWindow_Closed;
         _viewModel.CloseWindowRequest -= OnCloseWindowRequest;
@@ -222,6 +229,9 @@ public partial class MainWindow : WpfUiWindow, INavigationWindow
 
     public bool Navigate(Type pageType)
     {
+        int from = _pages.IndexOf(_currentPage);
+        int to = _pages.IndexOf(pageType);
+        _pendingSlide = IsLoaded && from >= 0 && to >= 0 && from != to ? Math.Sign(to - from) : 0;
         _currentPage = pageType;
         NextPageCallback = null;
         NextPageAsyncCallback = null;
@@ -341,6 +351,113 @@ public partial class MainWindow : WpfUiWindow, INavigationWindow
         }
     }
 
+    public void ShowBootstrapperImport(Action<string> chosen)
+    {
+        ReleaseImport();
+        _importChosen = chosen;
+        Voidstrap.UI.Elements.Dialogs.BootstrapperImportDialog view = new();
+        view.CloseRequested += Import_CloseRequested;
+        view.SourceChosen += Import_SourceChosen;
+        ImportHost.Content = view;
+        ImportOverlay.BeginAnimation(OpacityProperty, null);
+        ImportOverlay.Visibility = Visibility.Visible;
+        if (MotionReduced)
+        {
+            ImportOverlay.Opacity = 1;
+            return;
+        }
+        CubicEase ease = new() { EasingMode = EasingMode.EaseOut };
+        Play(ImportOverlay, OpacityProperty, 0, 1, 160, 0);
+        Play(ImportPanelScale, ScaleTransform.ScaleXProperty, 0.96, 1, 220, 0, ease);
+        Play(ImportPanelScale, ScaleTransform.ScaleYProperty, 0.96, 1, 220, 0, ease);
+    }
+
+    private void Import_CloseRequested(object? sender, EventArgs e)
+    {
+        CloseImport();
+    }
+
+    private void Import_SourceChosen(object? sender, string source)
+    {
+        Action<string>? chosen = _importChosen;
+        _importChosen = null;
+        CloseImport();
+        chosen?.Invoke(source);
+    }
+
+    private void ImportOverlay_MouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (ReferenceEquals(e.OriginalSource, ImportOverlay))
+            CloseImport();
+    }
+
+    private void CloseImport()
+    {
+        if (ImportOverlay.Visibility != Visibility.Visible)
+            return;
+        _importChosen = null;
+        ImportOverlay.IsHitTestVisible = false;
+        if (MotionReduced)
+        {
+            FinishImportClose();
+            return;
+        }
+        ImportOverlay.BeginAnimation(OpacityProperty, _importFadeOut);
+    }
+
+    private void ImportFadeOut_Completed(object? sender, EventArgs e)
+    {
+        FinishImportClose();
+    }
+
+    private void FinishImportClose()
+    {
+        ImportOverlay.BeginAnimation(OpacityProperty, null);
+        ImportOverlay.Opacity = 1;
+        ImportOverlay.Visibility = Visibility.Collapsed;
+        ImportOverlay.IsHitTestVisible = true;
+        ReleaseImport();
+    }
+
+    private void ReleaseImport()
+    {
+        _importChosen = null;
+        if (ImportHost.Content is not Voidstrap.UI.Elements.Dialogs.BootstrapperImportDialog view)
+            return;
+        view.CloseRequested -= Import_CloseRequested;
+        view.SourceChosen -= Import_SourceChosen;
+        view.Release();
+        ImportHost.Content = null;
+    }
+
+    private static bool MotionReduced =>
+        !SystemParameters.ClientAreaAnimation
+        || Voidstrap.Utility.Platform.IsLinux && Voidstrap.UI.LinuxUiPerformance.ReducedMotion;
+
+    private void SlideIn(int direction)
+    {
+        StopSlide();
+        if (MotionReduced)
+            return;
+        double offset = SlideDistance * direction;
+        Play(_frameSlide, TranslateTransform.XProperty, offset, 0, 320, 0);
+        Play(RootFrame, OpacityProperty, 0, 1, 240, 0);
+        Play(_headingSlide, TranslateTransform.XProperty, offset * 0.6, 0, 320, 0);
+        Play(StepHeadingText, OpacityProperty, 0, 1, 240, 0);
+    }
+
+    private void StopSlide()
+    {
+        _frameSlide.BeginAnimation(TranslateTransform.XProperty, null);
+        _headingSlide.BeginAnimation(TranslateTransform.XProperty, null);
+        RootFrame.BeginAnimation(OpacityProperty, null);
+        StepHeadingText.BeginAnimation(OpacityProperty, null);
+        _frameSlide.X = 0;
+        _headingSlide.X = 0;
+        RootFrame.Opacity = 1;
+        StepHeadingText.Opacity = 1;
+    }
+
     private static string HeadingFor(Type pageType)
     {
         if (pageType == typeof(InstallPage))
@@ -377,6 +494,10 @@ public partial class MainWindow : WpfUiWindow, INavigationWindow
 
     private void RootFrame_Navigated(object sender, NavigationEventArgs e)
     {
+        int direction = _pendingSlide;
+        _pendingSlide = 0;
+        if (direction != 0)
+            SlideIn(direction);
         if (Voidstrap.Utility.Platform.UsesPortableUi && e.Content is DependencyObject content)
         {
             _linuxTextContent = content;
